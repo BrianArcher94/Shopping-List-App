@@ -1,0 +1,34 @@
+{
+  "appId": "9235b468-56d0-489e-bde7-1dfacb8c39a0",
+  "appDisplayName": "Shopping List",
+  "description": null,
+  "environmentId": "d4651d5d-2438-e7e8-820a-f344f1ce5ca3",
+  "buildPath": "./dist",
+  "buildEntryPoint": "index.html",
+  "logoPath": "Default",
+  "localAppUrl": "http://localhost:3000/",
+  "connectionReferences": {},
+  "databaseReferences": {
+    "default.cds": {
+      "dataSources": {
+        "shoppinglists": {
+          "entitySetName": "ba_shoppinglists",
+          "logicalName": "ba_shoppinglist",
+          "isHidden": false
+        },
+        "shoppingitems": {
+          "entitySetName": "ba_shoppingitems",
+          "logicalName": "ba_shoppingitem",
+          "isHidden": false
+        },
+        "favouriteitems": {
+          "entitySetName": "ba_favouriteitems",
+          "logicalName": "ba_favouriteitem",
+          "isHidden": false
+        }
+      },
+      "environmentVariableName": ""
+    }
+  },
+  "version": "1.0"
+}
