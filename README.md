@@ -5,12 +5,12 @@ Welcome to the Shopping List App. This repo contains the many versions of my Sho
 
 Each version is isolated in its own repository and differs ONLY by backend + hosting:
 
-| Version | Hosting | Backend | Auth | 
-|--------|--------|--------|------|
-| 1 | Power Apps Code App | Dataverse | Default |
-| 2 | Azure Web App | Table Storage | Default   | 
-| 3 | Azure Web App | Azure SQL | Default |
-| 4 | Azure Web App | Azure SQL | Azure AD B2C |
+| Version | Hosting | Backend | Auth | Status |
+|--------|--------|--------|------| ------|
+| 1 | Power Apps Code App | Dataverse | Default | ✅ |
+| 2 | Azure Web App | Table Storage | Default   | ✅ |
+| 3 | Azure Web App | Azure SQL | Default | ✅ |
+| 4 | Azure Web App | Azure SQL | Entra External ID  | 👀 |
 | 5 | Azure Web App | PostgreSQL | Default |
 | 6 | Azure Web App | Cosmos DB | Default |
 | 7 | Azure Container Apps | Azure SQL | Default |
