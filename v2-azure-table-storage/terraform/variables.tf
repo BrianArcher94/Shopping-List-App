@@ -12,9 +12,9 @@ variable "build-definition-name" {
 locals {
 
 
-  target_project = "slasql"
+  target_project = "slatbl"
 
-  prefix = "slasql"
+  prefix = "slatbl"
 
   env      = element(split("-", lower(terraform.workspace)), 0)
   location = element(split("-", lower(terraform.workspace)), 1) == "ukw" ? "ukwest" : "uksouth"
@@ -50,8 +50,8 @@ locals {
       id       = azurerm_resource_group.main[0].id
     }
 
-    ip_address      = "88.97.239.245"
-    ip_address_cidr = "88.97.239.245/32"
+    ip_address      = "X.X.X.X"
+    ip_address_cidr = "X.X.X.X/32"
 
 
   }
