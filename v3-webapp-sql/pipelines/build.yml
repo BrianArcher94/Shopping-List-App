@@ -2,7 +2,7 @@ trigger:
 - none
 
 pool:
-  name: <poolName>
+  name: <PoolName>
 
 variables:
 
@@ -62,7 +62,7 @@ stages:
       - powershell: |
           Set-Location terraform
           terraform output -raw output_resource_group
-        displayName: 'Terraform Output RG Name'
+        displayName: 'terraform Output RG Name'
 
   - stage: PLAN
     displayName: 'PLAN'
@@ -79,18 +79,18 @@ stages:
             displayName: 'Terraform Init'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: <ServiceConnection>
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
               inlineScript: |
-                terraform init
+                terraform init -upgrade
 
           - task: AzureCLI@3
             displayName: 'Terraform Validate'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: <ServiceConnection>
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
@@ -101,7 +101,7 @@ stages:
             displayName: 'Initialize Workspace'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: '<ServiceConnection>'
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
@@ -112,7 +112,7 @@ stages:
             displayName: 'Terraform Plan'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: '<ServiceConnection>'
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
@@ -124,3 +124,87 @@ stages:
               targetPath: '$(Build.ArtifactStagingDirectory)'
               artifact: 'tfplan'
             displayName: 'Publish Plan and Cost Reports'
+
+  - stage: APPROVE
+    displayName: 'APPROVE'
+    dependsOn:
+    - CHECK
+    - WORKSPACE
+    - PLAN
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Approve_Deployment'
+      displayName: 'Request for Approval'
+      pool: server
+      steps:
+      - task: ManualValidation@0
+        timeoutInMinutes: 120
+        inputs:
+          notifyUsers: |
+            $(Build.RequestedForEmail)
+          instructions: |
+
+            Requester Name : $(Build.RequestedFor)
+            Requester Email : $(Build.RequestedForEmail)
+            org Uri : $(System.CollectionUri)
+            Project Name : $(System.TeamProject)
+          onTimeout: 'reject'
+
+
+
+  - stage: APPLY
+    displayName: 'APPLY'
+    dependsOn:
+    - APPROVE
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Apply'
+      displayName: 'Apply'
+
+      steps:
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Init'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform init -upgrade
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Validate'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform validate
+
+          - task: AzureCLI@3
+            displayName: 'Initialize Workspace'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                powershell -NoProfile -ExecutionPolicy Bypass -File "environments/workspace.ps1" -workspaceName "$(workspace)"
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Apply'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform plan -out=tfplan
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                terraform apply -auto-approve tfplan

@@ -1,0 +1,25 @@
+{
+  "name": "shopping-list-api",
+  "version": "1.0.0",
+  "description": "V3 REST API over Azure SQL Database",
+  "main": "dist/src/{index.js,functions/*.js}",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "clean": "rimraf dist",
+    "prestart": "npm run clean && npm run build",
+    "start": "func start",
+    "test": "echo \"(no tests yet)\" && exit 0"
+  },
+  "dependencies": {
+    "mssql": "^11.0.1",
+    "@azure/functions": "^4.5.1",
+    "@azure/identity": "^4.13.1"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.1.5",
+    "@types/node": "^20.0.0",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.9.0"
+  }
+}

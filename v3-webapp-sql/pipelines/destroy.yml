@@ -2,7 +2,7 @@ trigger:
 - none
 
 pool:
-  name: <poolName>
+  name: <PoolName>
 
 variables:
 
@@ -17,7 +17,6 @@ variables:
       value: pa-uks
     ${{ else }}:
       value: default
-
 
 stages:
 
@@ -79,7 +78,7 @@ stages:
             displayName: 'Terraform Init'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: <ServiceConnection>
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
@@ -90,7 +89,7 @@ stages:
             displayName: 'Terraform Validate'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: <ServiceConnection>
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
@@ -101,7 +100,7 @@ stages:
             displayName: 'Initialize Workspace'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: '<ServiceConnection>'
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
@@ -112,15 +111,90 @@ stages:
             displayName: 'Terraform Plan'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: '<ServiceConnection>'
+              azureSubscription: '<ServiceConnection'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
               inlineScript: |
-                terraform plan -out=tfplan
+                terraform plan -destroy
 
-          - task: PublishPipelineArtifact@1
+  - stage: APPROVE
+    displayName: 'APPROVE'
+    dependsOn:
+    - CHECK
+    - WORKSPACE
+    - PLAN
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Approve_Destroy'
+      displayName: 'Request for Approval'
+      pool: server
+      steps:
+      - task: ManualValidation@0
+        timeoutInMinutes: 120
+        inputs:
+          notifyUsers: |
+            $(Build.RequestedForEmail)
+          instructions: |
+            Requester Name : $(Build.RequestedFor)
+            Requester Email : $(Build.RequestedForEmail)
+            org Uri : $(System.CollectionUri)
+            Project Name : $(System.TeamProject)
+          onTimeout: 'reject'
+
+
+
+  - stage: DESTRUCTION
+    displayName: 'DESTRUCTION'
+    dependsOn:
+    - APPROVE
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Destroy'
+      displayName: 'Destroy'
+
+      steps:
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Init'
             inputs:
-              targetPath: '$(Build.ArtifactStagingDirectory)'
-              artifact: 'tfplan'
-            displayName: 'Publish Plan and Cost Reports'
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform init
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Validate'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform validate
+
+          - task: AzureCLI@3
+            displayName: 'Initialize Workspace'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                powershell -NoProfile -ExecutionPolicy Bypass -File "environments/workspace.ps1" -workspaceName "$(workspace)"
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Destroy'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform destroy -auto-approve

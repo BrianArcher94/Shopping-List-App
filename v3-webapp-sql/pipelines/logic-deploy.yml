@@ -1,0 +1,74 @@
+trigger:
+  - none
+
+pool:
+  name: <PoolName>
+
+variables:
+  - name: appDir
+    value: 'logic'
+  - name: logicAppName
+    value: 'slasql-dv-lgaps-ukw-001'
+  - name: azureSubscription
+    value: '<ServiceConnection'
+
+stages:
+  # =========================================================
+  - stage: Package
+    displayName: 'Package workflow'
+    jobs:
+      - job: package
+        displayName: 'Collect & zip'
+        steps:
+          - task: CopyFiles@2
+            displayName: 'Stage deployable files'
+            inputs:
+              SourceFolder: '$(appDir)'
+              # host.json + connectors + every workflow folder. No build, no node_modules.
+              Contents: |
+                host.json
+                connections.json
+                parameters.json
+                **/workflow.json
+              TargetFolder: '$(Build.BinariesDirectory)/logic'
+
+          - task: ArchiveFiles@2
+            displayName: 'Zip deployment bundle'
+            inputs:
+              rootFolderOrFile: '$(Build.BinariesDirectory)/logic'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/logic.zip'
+              replaceExistingArchive: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish artifact "logic"'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/logic.zip'
+              artifact: 'logic'
+
+  # =========================================================
+  - stage: Deploy
+    displayName: 'Deploy to Logic App'
+    dependsOn: Package
+    condition: succeeded()
+    jobs:
+      - deployment: deploy
+        displayName: 'Deploy workflow'
+        environment: 'dev'                  
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'logic'
+
+                - task: AzureFunctionApp@2
+                  displayName: 'Deploy to $(logicAppName)'
+                  inputs:
+                    connectionType: 'AzureRM'
+                    azureSubscription: '$(azureSubscription)'
+                    appType: 'functionApp'         
+                    appName: '$(logicAppName)'
+                    package: '$(Pipeline.Workspace)/logic/logic.zip'
+                    deploymentMethod: 'zipDeploy'
