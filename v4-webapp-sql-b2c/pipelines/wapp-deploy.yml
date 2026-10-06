@@ -1,0 +1,107 @@
+trigger:
+- none
+
+pool:
+  name: <PoolName>                      
+
+variables:
+  - name: appDir
+    value: 'app/shopping-list'
+  - name: webAppName
+    value: 'slab2c-dv-wapp-ukw-001'
+  - name: azureSubscription
+    value: '<ServiceConnection>'       
+  - name: nodeVersion
+    value: '24.x'
+  - name: useApi                      
+    value: 'true'
+  # V4 — Entra External ID. Identifiers, not secrets: copy from `terraform output`
+  # in terraform-identity/ (ciam_authority / appr_spa_client_id / appr_api_scope).
+  - name: authAuthority
+    value: 'https://<TenantDomainPrefix>.ciamlogin.com/'
+  - name: authClientId
+    value: '<SpaClientId>'
+  - name: authApiScope
+    value: 'api://<ApiClientId>/access_as_user'
+  - name: authTenantId
+    value: '<TenantId>'
+  - name: AZP_AGENT_CLEANUP_PSMODULES_IN_POWERSHELL
+    value: true
+
+stages:
+  # =========================================================
+  - stage: Build
+    displayName: 'Build & package SPA'
+    jobs:
+      - job: build
+        displayName: 'npm build'
+        steps:
+          - task: NodeTool@0
+            displayName: 'Use Node $(nodeVersion)'
+            inputs:
+              versionSpec: '$(nodeVersion)'
+
+          - script: npm ci
+            displayName: 'npm ci'
+            workingDirectory: '$(appDir)'
+
+          - script: npm test
+            displayName: 'npm test (vitest)'
+            workingDirectory: '$(appDir)'
+
+          - script: npm run build
+            displayName: 'npm run build (vite)'
+            workingDirectory: '$(appDir)'
+            env:
+              # VITE_* are inlined at build time — set them HERE, not as app settings.
+              VITE_USE_API: '$(useApi)'
+              VITE_API_BASE_URL: '/api'
+              VITE_AUTH_AUTHORITY: '$(authAuthority)'
+              VITE_AUTH_CLIENT_ID: '$(authClientId)'
+              VITE_AUTH_API_SCOPE: '$(authApiScope)'
+              VITE_AUTH_TENANT_ID: '$(authTenantId)'
+
+          - script: npm prune --omit=dev
+            displayName: 'Prune dev dependencies'
+            workingDirectory: '$(appDir)'
+
+          - task: ArchiveFiles@2
+            displayName: 'Zip deployment bundle'
+            inputs:
+              rootFolderOrFile: '$(appDir)'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/wapp.zip'
+              replaceExistingArchive: true
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish artifact "wapp"'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/wapp.zip'
+              artifact: 'wapp'
+
+  # =========================================================
+  - stage: Deploy
+    displayName: 'Deploy to Web App'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - deployment: deploy
+        displayName: 'Deploy SPA'
+        environment: 'dev'           
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: 'wapp'
+
+                - task: AzureWebApp@1
+                  displayName: 'Deploy to $(webAppName)'
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    appType: 'webAppLinux'
+                    appName: '$(webAppName)'
+                    package: '$(Pipeline.Workspace)/wapp/wapp.zip'
+                    # Omit startUpCommand if Terraform owns app_command_line.
+                    startUpCommand: 'node server.js'

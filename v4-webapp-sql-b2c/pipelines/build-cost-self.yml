@@ -1,0 +1,320 @@
+trigger:
+- none
+
+pool:
+  name: <PoolName>
+
+variables:
+
+  - name: workspace
+    ${{ if contains(variables['Build.DefinitionName'], 'Dev UKS') }}:
+      value: dv-uks
+    ${{ elseif contains(variables['Build.DefinitionName'], 'Dev UKW') }}:
+          value: dv-ukw
+    ${{ elseif contains(variables['Build.DefinitionName'], 'Pre-Prod UKS') }}:
+      value: pp-uks
+    ${{ elseif contains(variables['Build.DefinitionName'], 'Prod UKS') }}:
+      value: pa-uks
+    ${{ else }}:
+      value: default
+
+  - name: AZP_AGENT_CLEANUP_PSMODULES_IN_POWERSHELL
+    value: true
+
+
+  # --- tfcost (cost estimation) ---
+  - name: tfcostDir
+    value: 'tools/tfcost'   # ADJUST: path to the tfcost source within this repo
+  - name: currency
+    value: 'GBP'            # Currency passed to `tfcost --currency`
+
+
+stages:
+
+  - stage: WORKSPACE
+    displayName: WORKSPACE
+    jobs:
+    - job: 'initiating_workspace'
+      steps:
+      - powershell: |
+          Write-Host "A pipeline named '$(Build.DefinitionName)' means a workspace called '$(workspace)'"
+        displayName: 'Display Workspace Output'
+
+  - stage: CHECK
+    displayName: CHECK
+    dependsOn:
+    - WORKSPACE
+    condition: |
+      and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Cancel_Default_Workspace'
+      displayName: 'Cancel Default Workspace'
+      steps:
+
+      - powershell: |
+          Write-Host "A pipeline named '$(Build.DefinitionName)' means a workspace called '$(workspace)'"
+        displayName: 'Display Workspace/Environment Data'
+
+  - stage: CANCEL
+    dependsOn:
+    - CHECK
+    condition: eq(variables['workspace'], 'default')
+    displayName: CANCEL
+    jobs:
+    - job: 'Default_Workspace_Located'
+      displayName: 'Default Workspace Located'
+      steps:
+
+      - powershell: |
+          Write-Host "The pipeline has exited as workspace is default"
+        displayName: 'Display Stop Message'
+
+      - powershell: |
+          Set-Location terraform
+          terraform output -raw output_resource_group
+        displayName: 'terraform Output RG Name'
+
+  - stage: PLAN
+    displayName: 'PLAN'
+    dependsOn:
+    - CHECK
+    - WORKSPACE
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+      - job: 'Plan'
+        displayName: 'Terraform Plan'
+        steps:
+
+          # The Origin cert PFX is git-ignored, so it is not in the checkout.
+          # Fetch it from Secure Files and stage it where Terraform expects it
+          # (filebase64 in main.kyvt.tf reads ./cert/client-cert/origin.pfx).
+          - task: DownloadSecureFile@1
+            name: originCert
+            displayName: 'Download Origin Cert (Secure File)'
+            inputs:
+              secureFile: 'origin.pfx'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              New-Item -ItemType Directory -Force -Path 'terraform/cert/client-cert' | Out-Null
+              Copy-Item "$(originCert.secureFilePath)" 'terraform/cert/client-cert/origin.pfx' -Force
+            displayName: 'Stage Origin Cert for Terraform'
+
+          - task: DownloadSecureFile@1
+            name: originRootCert
+            displayName: 'Download Origin Root Cert (Secure File)'
+            inputs:
+              secureFile: 'origin_ca_rsa_root.pem'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              New-Item -ItemType Directory -Force -Path 'terraform/cert' | Out-Null
+              Copy-Item "$(originRootCert.secureFilePath)" 'terraform/cert/origin_ca_rsa_root.pem' -Force
+            displayName: 'Stage Origin Root Cert for Terraform'
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Init'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform init -upgrade
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Validate'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform validate
+
+          - task: AzureCLI@3
+            displayName: 'Initialize Workspace'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                powershell -NoProfile -ExecutionPolicy Bypass -File "environments/workspace.ps1" -workspaceName "$(workspace)"
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Plan'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform plan -out=tfplan
+
+          # --- Cost estimation with tfcost ---
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              Set-Location terraform
+              # Convert the binary plan to JSON for tfcost (UTF-8 without BOM so
+              # Python can parse it). Provider schemas are present from init.
+              $planJson = terraform show -json tfplan | Out-String
+              [System.IO.File]::WriteAllText("$(Build.ArtifactStagingDirectory)/plan.json", $planJson)
+              # Carry the binary plan forward as an artifact alongside the reports.
+              Copy-Item tfplan "$(Build.ArtifactStagingDirectory)/tfplan" -Force
+            displayName: 'Convert Plan to JSON'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              python -m pip install --upgrade pip
+              pip install -e "$(tfcostDir)"
+            displayName: 'Install tfcost'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              $planJson = "$(Build.ArtifactStagingDirectory)/plan.json"
+              # Human-readable report (also streamed to the build log via Tee-Object).
+              python -m tfcost --plan $planJson --currency "$(currency)" --output table |
+                Tee-Object -FilePath "$(Build.ArtifactStagingDirectory)/cost-report.txt"
+              # Machine-readable report for downstream tooling.
+              python -m tfcost --plan $planJson --currency "$(currency)" --output json |
+                Out-File -FilePath "$(Build.ArtifactStagingDirectory)/cost-report.json" -Encoding utf8
+            displayName: 'Estimate Costs (tfcost)'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              $staging = "$(Build.ArtifactStagingDirectory)"
+              $summary = Join-Path $staging 'cost-report.md'
+              $fence   = '```'
+              # Render the report as a fenced code block so it displays cleanly
+              # on the build summary, then attach it.
+              $lines = @(
+                '### Terraform cost estimate (tfcost)',
+                '',
+                $fence
+              ) + (Get-Content (Join-Path $staging 'cost-report.txt')) + @($fence)
+              Set-Content -Path $summary -Value $lines -Encoding utf8
+              Write-Host "##vso[task.uploadsummary]$summary"
+            displayName: 'Attach Cost Report to Build Summary'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)'
+              artifact: 'tfplan'
+            displayName: 'Publish Plan and Cost Reports'
+
+  - stage: APPROVE
+    displayName: 'APPROVE'
+    dependsOn:
+    - CHECK
+    - WORKSPACE
+    - PLAN
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Approve_Deployment'
+      displayName: 'Request for Approval'
+      pool: server
+      steps:
+      - task: ManualValidation@0
+        timeoutInMinutes: 120
+        inputs:
+          notifyUsers: |
+            $(Build.RequestedForEmail)
+          instructions: |
+
+            Requester Name : $(Build.RequestedFor)
+            Requester Email : $(Build.RequestedForEmail)
+            org Uri : $(System.CollectionUri)
+            Project Name : $(System.TeamProject)
+          onTimeout: 'reject'
+
+
+
+  - stage: APPLY
+    displayName: 'APPLY'
+    dependsOn:
+    - APPROVE
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Apply'
+      displayName: 'Apply'
+
+      steps:
+
+          # The Origin cert PFX is git-ignored, so it is not in the checkout.
+          # Fetch it from Secure Files and stage it where Terraform expects it
+          # (filebase64 in main.kyvt.tf reads ./cert/client-cert/origin.pfx).
+          - task: DownloadSecureFile@1
+            name: originCert
+            displayName: 'Download Origin Cert (Secure File)'
+            inputs:
+              secureFile: 'origin.pfx'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              New-Item -ItemType Directory -Force -Path 'terraform/cert/client-cert' | Out-Null
+              Copy-Item "$(originCert.secureFilePath)" 'terraform/cert/client-cert/origin.pfx' -Force
+            displayName: 'Stage Origin Cert for Terraform'
+
+          - task: DownloadSecureFile@1
+            name: originRootCert
+            displayName: 'Download Origin Root Cert (Secure File)'
+            inputs:
+              secureFile: 'origin_ca_rsa_root.pem'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              New-Item -ItemType Directory -Force -Path 'terraform/cert' | Out-Null
+              Copy-Item "$(originRootCert.secureFilePath)" 'terraform/cert/origin_ca_rsa_root.pem' -Force
+            displayName: 'Stage Origin Root Cert for Terraform'
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Init'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform init -upgrade
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Validate'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform validate
+
+          - task: AzureCLI@3
+            displayName: 'Initialize Workspace'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                powershell -NoProfile -ExecutionPolicy Bypass -File "environments/workspace.ps1" -workspaceName "$(workspace)"
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Apply'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform plan -out=tfplan
+                if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                terraform apply -auto-approve tfplan
