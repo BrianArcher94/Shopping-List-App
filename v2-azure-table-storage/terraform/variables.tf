@@ -12,9 +12,9 @@ variable "build-definition-name" {
 locals {
 
 
-  target_project = "slasql"
+  target_project = "slatbl"
 
-  prefix = "slasql"
+  prefix = "slatbl"
 
   env      = element(split("-", lower(terraform.workspace)), 0)
   location = element(split("-", lower(terraform.workspace)), 1) == "ukw" ? "ukwest" : "uksouth"

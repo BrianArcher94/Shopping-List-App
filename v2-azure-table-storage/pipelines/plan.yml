@@ -2,7 +2,7 @@ trigger:
 - none
 
 pool:
-  name: <ppolName>
+  name: <poolName>
 
 variables:
 
@@ -101,7 +101,7 @@ stages:
             displayName: 'Initialize Workspace'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: '<ServiceConnection'
+              azureSubscription: '<ServiceConnection>'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
@@ -112,7 +112,7 @@ stages:
             displayName: 'Terraform Plan'
             inputs:
               connectionType: 'azureRM'
-              azureSubscription: '<ServiceConnection'
+              azureSubscription: '<ServiceConnection>'
               scriptType: 'ps'
               scriptLocation: 'inlineScript'
               workingDirectory: 'terraform'
