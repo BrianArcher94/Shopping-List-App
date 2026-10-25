@@ -10,9 +10,9 @@ Each version is isolated in its own repository and differs ONLY by backend + hos
 | 1 | Power Apps Code App | Dataverse | Default | ✅ |
 | 2 | Azure Web App | Table Storage | Default   | ✅ |
 | 3 | Azure Web App | Azure SQL | Default | ✅ |
-| 4 | Azure Web App | Azure SQL | Entra External ID  | 👀 |
-| 5 | Azure Web App | PostgreSQL | Default |
-| 6 | Azure Web App | Cosmos DB | Default |
+| 4 | Azure Web App | Azure SQL | Entra External ID  | ✅ |
+| 5 | Azure Web App | PostgreSQL | Default | ✅ |
+| 6 | Azure Web App | Cosmos DB | Default | 👀 |
 | 7 | Azure Container Apps | Azure SQL | Default |
 | 8 | AKS | Azure SQL | Default |
 
