@@ -1,0 +1,443 @@
+@import url("https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================
+   "Till Receipt" design tokens (V5 redesign, Option B).
+   Light = white receipt paper on cool grey. Dark = carbon copy.
+   ============================================================ */
+:root {
+  font-family: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  line-height: 1.45;
+  font-weight: 400;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+
+  --bg: #e6e8ec;
+  --paper: #ffffff;
+  --ink: #1a1a1a;
+  --soft-ink: #45484f;
+  --muted-ink: #5e6168;
+  --rule: #c3c6cc;
+  --coupon-rule: #8e9198;
+  --field-border: #1a1a1a;
+  --solid: #1a1a1a;
+  --solid-ink: #ffffff;
+  --accent: #b3301b;
+  --accent-hover: #86210f;
+  --accent-ink: #ffffff;
+  --stamp-ordered: #1d4ed8;
+  --stamp-delivered: #15803d;
+  --stamp-ordered-ink: #1e3a8a;
+  --stamp-paper: rgba(255, 255, 255, 0.88);
+  --receipt-shadow: rgba(26, 26, 26, 0.12);
+  --focus: #1a1a1a;
+
+  --radius: 0.375rem;
+
+  /* shadcn/ui bridge — dialogs, calendar and toasts pick these up */
+  --background: var(--bg);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --popover: var(--paper);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: var(--accent-ink);
+  --secondary: var(--bg);
+  --secondary-foreground: var(--ink);
+  --muted: var(--bg);
+  --muted-foreground: var(--muted-ink);
+  --accent-color: var(--accent);
+  --accent-foreground: var(--ink);
+  --destructive: var(--accent);
+  --border: var(--rule);
+  --input: var(--field-border);
+  --ring: var(--focus);
+}
+
+.dark {
+  --bg: #121316;
+  --paper: #1e2024;
+  --ink: #ecedef;
+  --soft-ink: #c4c7cc;
+  --muted-ink: #a3a7ae;
+  --rule: #3a3d43;
+  --coupon-rule: #5a5e66;
+  --field-border: #a3a7ae;
+  --solid: #ecedef;
+  --solid-ink: #121316;
+  --accent: #f0644c;
+  --accent-hover: #ff8670;
+  --accent-ink: #121316;
+  --stamp-ordered: #7aa2ff;
+  --stamp-delivered: #4ade80;
+  --stamp-ordered-ink: #a9c1ff;
+  --stamp-paper: rgba(30, 32, 36, 0.9);
+  --receipt-shadow: rgba(0, 0, 0, 0.5);
+  --focus: #ecedef;
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent-color);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --font-display: "Big Shoulders Display", "Arial Narrow", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    min-height: 100vh;
+  }
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+  a {
+    color: inherit;
+  }
+  :focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* ---------- type ---------- */
+  .display {
+    font-family: var(--font-display);
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    line-height: 1;
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum" 1;
+  }
+  .muted-text {
+    color: var(--muted-ink);
+  }
+  .panel-heading {
+    font-family: var(--font-display);
+    font-weight: 900;
+    font-size: 26px;
+    line-height: 1.05;
+    text-transform: uppercase;
+    margin: 0;
+  }
+
+  /* ---------- the receipt ---------- */
+  .receipt {
+    position: relative;
+    filter: drop-shadow(0 10px 18px var(--receipt-shadow));
+  }
+  .receipt__edge {
+    height: 12px;
+    background-size: 16px 12px;
+  }
+  .receipt__edge--top {
+    background-image: radial-gradient(circle at 50% 0, var(--bg) 6px, var(--paper) 6.5px);
+  }
+  .receipt__edge--bottom {
+    background-image: radial-gradient(circle at 50% 100%, var(--bg) 6px, var(--paper) 6.5px);
+  }
+  .receipt__body {
+    background: var(--paper);
+    padding: 20px 36px 28px;
+    font-family: var(--font-mono);
+    font-size: 14px;
+  }
+  @media (max-width: 480px) {
+    .receipt__body {
+      padding: 16px 18px 20px;
+    }
+  }
+  .rule {
+    border-bottom: 2px dashed var(--rule);
+  }
+
+  /* ---------- rubber stamps (status) ---------- */
+  .stamp {
+    display: inline-block;
+    padding: 2px 10px;
+    border: 3px solid currentColor;
+    border-radius: 6px;
+    background: var(--stamp-paper);
+    font-family: var(--font-display);
+    font-weight: 900;
+    font-size: 20px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    line-height: 1.1;
+    transform: rotate(-4deg);
+    white-space: nowrap;
+  }
+  .stamp--draft { color: var(--accent); }
+  .stamp--ordered { color: var(--stamp-ordered); }
+  .stamp--delivered { color: var(--stamp-delivered); }
+  /* Pressed onto the header's dashed rule, hanging off the paper's right edge. */
+  .stamp--hero {
+    position: absolute;
+    bottom: -24px;
+    right: -54px;
+    font-size: 30px;
+    padding: 2px 14px;
+    transform: rotate(8deg);
+    pointer-events: none;
+  }
+  @media (max-width: 480px) {
+    .stamp--hero {
+      bottom: -20px;
+      right: -26px;
+      font-size: 22px;
+    }
+  }
+
+  /* ---------- buttons ---------- */
+  .btn-solid,
+  .btn-accent,
+  .btn-outline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 16px;
+    border-radius: 4px;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+  }
+  .btn-solid {
+    border: 0;
+    background: var(--solid);
+    color: var(--solid-ink);
+  }
+  .btn-solid:hover:not(:disabled) { opacity: 0.85; }
+  .btn-accent {
+    border: 0;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-family: var(--font-display);
+    font-weight: 900;
+    font-size: 24px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    min-height: 56px;
+  }
+  .btn-accent:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn-outline {
+    border: 1.5px solid var(--field-border);
+    background: transparent;
+    color: var(--ink);
+  }
+  .btn-outline:hover:not(:disabled) { background: var(--bg); }
+  .btn-solid:disabled,
+  .btn-accent:disabled,
+  .btn-outline:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    flex: none;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted-ink);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .btn-icon:hover:not(:disabled) {
+    background: var(--bg);
+    color: var(--ink);
+  }
+  .btn-icon.is-on {
+    color: var(--ink);
+  }
+  .btn-icon:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .link-mono {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .link-mono:hover { color: var(--accent-hover); }
+
+  /* ---------- fields ---------- */
+  .field {
+    height: 48px;
+    padding: 0 12px;
+    border: 1.5px solid var(--field-border);
+    border-radius: 4px;
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
+    min-width: 0;
+  }
+  .field::placeholder { color: var(--muted-ink); }
+  textarea.field {
+    height: auto;
+    padding: 10px 12px;
+    resize: vertical;
+  }
+  .field-label {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  /* ---------- coupons (favourites) ---------- */
+  .coupon {
+    border: 2px dashed var(--coupon-rule);
+    border-radius: 6px;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  button.coupon {
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  button.coupon:hover {
+    border-color: var(--ink);
+    transform: translateY(-1px);
+  }
+
+  /* ---------- status steps ---------- */
+  .step {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 14px;
+  }
+  .step--done { border: 1.5px solid var(--ink); color: var(--ink); }
+  .step--current { background: var(--solid); color: var(--solid-ink); }
+  .step--todo { border: 1.5px dashed var(--coupon-rule); color: var(--soft-ink); }
+
+  /* ---------- navigation ---------- */
+  .nav-tab {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 500;
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--ink);
+  }
+  .nav-tab:hover { background: var(--paper); }
+  .nav-tab.is-active {
+    background: var(--solid);
+    color: var(--solid-ink);
+    font-weight: 600;
+  }
+  .tabbar-tab {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    border-top: 3px solid transparent;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--muted-ink);
+  }
+  .tabbar-tab.is-active {
+    border-top-color: var(--accent);
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  /* ---------- history stubs ---------- */
+  .stub {
+    width: 100%;
+    min-height: 64px;
+    padding: 12px 16px;
+    border: 0;
+    border-left: 6px solid var(--coupon-rule);
+    border-radius: 4px;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    text-align: left;
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+    transition: transform 0.12s;
+  }
+  .stub:hover { transform: translateX(4px); }
+  .stub--ordered { border-left-color: var(--stamp-ordered); }
+  .stub--delivered { border-left-color: var(--stamp-delivered); }
+  .stub--draft { border-left-color: var(--accent); }
+  .stub.is-selected {
+    background: var(--solid);
+    color: var(--solid-ink);
+  }
+  .stub.is-selected .stamp {
+    color: var(--solid-ink);
+    background: transparent;
+  }
+
+  /* ---------- notices ---------- */
+  .notice-locked {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1.5px solid var(--stamp-ordered);
+    border-radius: 4px;
+    color: var(--stamp-ordered-ink);
+  }
+}
