@@ -1,0 +1,253 @@
+trigger:
+- none
+
+# Two-pass apply (plan §13.3): run with deployContainerApps=false first, push the web
+# image (web-build-deploy with pushOnly), then run again with true and that image tag.
+parameters:
+  - name: deployContainerApps
+    displayName: 'Deploy the web container app and App Gateway (pass 2)'
+    type: boolean
+    default: false
+  - name: webImageTag
+    displayName: 'Web image tag in ACR, e.g. 1.0.0 (required when the box above is ticked)'
+    type: string
+    default: ' '
+
+pool:
+  name: <PoolName>
+
+variables:
+
+  - name: workspace
+    ${{ if contains(variables['Build.DefinitionName'], 'Dev UKS') }}:
+      value: dv-uks
+    ${{ elseif contains(variables['Build.DefinitionName'], 'Dev UKW') }}:
+          value: dv-ukw
+    ${{ elseif contains(variables['Build.DefinitionName'], 'Pre-Prod UKS') }}:
+      value: pp-uks
+    ${{ elseif contains(variables['Build.DefinitionName'], 'Prod UKS') }}:
+      value: pa-uks
+    ${{ else }}:
+      value: default
+
+  - name: AZP_AGENT_CLEANUP_PSMODULES_IN_POWERSHELL
+    value: true
+
+stages:
+
+  - stage: WORKSPACE
+    displayName: WORKSPACE
+    jobs:
+    - job: 'initiating_workspace'
+      steps:
+      - powershell: |
+          Write-Host "A pipeline named '$(Build.DefinitionName)' means a workspace called '$(workspace)'"
+        displayName: 'Display Workspace Output'
+
+  - stage: CHECK
+    displayName: CHECK
+    dependsOn:
+    - WORKSPACE
+    condition: |
+      and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Cancel_Default_Workspace'
+      displayName: 'Cancel Default Workspace'
+      steps:
+
+      - powershell: |
+          Write-Host "A pipeline named '$(Build.DefinitionName)' means a workspace called '$(workspace)'"
+        displayName: 'Display Workspace/Environment Data'
+
+  - stage: CANCEL
+    dependsOn:
+    - CHECK
+    condition: eq(variables['workspace'], 'default')
+    displayName: CANCEL
+    jobs:
+    - job: 'Default_Workspace_Located'
+      displayName: 'Default Workspace Located'
+      steps:
+
+      - powershell: |
+          Write-Host "The pipeline has exited as workspace is default"
+        displayName: 'Display Stop Message'
+
+      - powershell: |
+          Set-Location terraform
+          terraform output -raw output_resource_group
+        displayName: 'Terraform Output RG Name'
+
+  - stage: PLAN
+    displayName: 'PLAN'
+    dependsOn:
+    - CHECK
+    - WORKSPACE
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+      - job: 'Plan'
+        displayName: 'Terraform Plan'
+        steps:
+
+          # The Origin cert PFX is git-ignored, so it is not in the checkout.
+          # terraform plan -destroy still evaluates the config (filebase64), so
+          # the file must be staged here too.
+          - task: DownloadSecureFile@1
+            name: originCert
+            displayName: 'Download Origin Cert (Secure File)'
+            inputs:
+              secureFile: 'origin.pfx'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              New-Item -ItemType Directory -Force -Path 'terraform/cert/client-cert' | Out-Null
+              Copy-Item "$(originCert.secureFilePath)" 'terraform/cert/client-cert/origin.pfx' -Force
+            displayName: 'Stage Origin Cert for Terraform'
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Init'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform init
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Validate'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform validate
+
+          - task: AzureCLI@3
+            displayName: 'Initialize Workspace'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                powershell -NoProfile -ExecutionPolicy Bypass -File "environments/workspace.ps1" -workspaceName "$(workspace)"
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Plan'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                # Run parameters (deployContainerApps, webImageTag) as Terraform variables
+                $tfArgs = @('-var', 'deploy_container_apps=${{ lower(format('{0}', parameters.deployContainerApps)) }}')
+                $webImageTag = '${{ trim(parameters.webImageTag) }}'
+                if ($webImageTag) { $tfArgs += @('-var', "web_image_tag=$webImageTag") }
+                terraform plan -destroy @tfArgs
+
+  - stage: APPROVE
+    displayName: 'APPROVE'
+    dependsOn:
+    - CHECK
+    - WORKSPACE
+    - PLAN
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Approve_Destroy'
+      displayName: 'Request for Approval'
+      pool: server
+      steps:
+      - task: ManualValidation@0
+        timeoutInMinutes: 120
+        inputs:
+          notifyUsers: |
+            $(Build.RequestedForEmail)
+          instructions: |
+            Requester Name : $(Build.RequestedFor)
+            Requester Email : $(Build.RequestedForEmail)
+            org Uri : $(System.CollectionUri)
+            Project Name : $(System.TeamProject)
+          onTimeout: 'reject'
+
+
+
+  - stage: DESTRUCTION
+    displayName: 'DESTRUCTION'
+    dependsOn:
+    - APPROVE
+    condition: and(succeeded(), ne(variables['workspace'], 'default'))
+    jobs:
+    - job: 'Destroy'
+      displayName: 'Destroy'
+
+      steps:
+
+          # The Origin cert PFX is git-ignored, so it is not in the checkout.
+          # terraform destroy still evaluates the config (filebase64), so the
+          # file must be staged here too.
+          - task: DownloadSecureFile@1
+            name: originCert
+            displayName: 'Download Origin Cert (Secure File)'
+            inputs:
+              secureFile: 'origin.pfx'
+
+          - powershell: |
+              $ErrorActionPreference = 'Stop'
+              New-Item -ItemType Directory -Force -Path 'terraform/cert/client-cert' | Out-Null
+              Copy-Item "$(originCert.secureFilePath)" 'terraform/cert/client-cert/origin.pfx' -Force
+            displayName: 'Stage Origin Cert for Terraform'
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Init'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform init
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Validate'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                terraform validate
+
+          - task: AzureCLI@3
+            displayName: 'Initialize Workspace'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                powershell -NoProfile -ExecutionPolicy Bypass -File "environments/workspace.ps1" -workspaceName "$(workspace)"
+
+          - task: AzureCLI@3
+            displayName: 'Terraform Destroy'
+            inputs:
+              connectionType: 'azureRM'
+              azureSubscription: '<ServiceConnection>'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'terraform'
+              inlineScript: |
+                # Run parameters (deployContainerApps, webImageTag) as Terraform variables
+                $tfArgs = @('-var', 'deploy_container_apps=${{ lower(format('{0}', parameters.deployContainerApps)) }}')
+                $webImageTag = '${{ trim(parameters.webImageTag) }}'
+                if ($webImageTag) { $tfArgs += @('-var', "web_image_tag=$webImageTag") }
+                terraform destroy -auto-approve @tfArgs

@@ -1,0 +1,110 @@
+# PR validation for the web tier: proves the change lints, passes its tests and that the
+# image builds, before it can merge to main.
+#
+# Azure Repos ignores YAML `pr:` triggers, so this runs from a build validation branch
+# policy on main (path filter /app/shopping-list/*) - see the Phase 3P PR for the setup.
+#
+# The image is built by ACR Tasks with --no-push: the same Dockerfile and build args as
+# web-build-deploy, but nothing is stored in the registry. Needs the ACR to exist (after
+# infra pass 1).
+
+trigger: none
+pr: none
+
+pool:
+  name: <PoolName>
+
+variables:
+  # The only service connection with rights on the registry (Contributor, T3.6). PR builds
+  # run the PR's own code with it, which is fine for a single-author repo; give the plan
+  # identity a narrower role on the registry if that changes.
+  - name: azureSubscription
+    value: '<ServiceConnection>'
+  - name: acrName
+    value: 'slasqlcondvacrukw001'
+  - name: appDir
+    value: 'app/shopping-list'
+  - name: nodeVersion
+    value: '24'
+  - name: AZP_AGENT_CLEANUP_PSMODULES_IN_POWERSHELL
+    value: true
+
+jobs:
+  - job: validate
+    displayName: 'Lint, test, image build (no push)'
+    steps:
+      - checkout: self
+        fetchDepth: 1
+
+      - task: NodeTool@0
+        displayName: 'Use Node $(nodeVersion)'
+        inputs:
+          versionSpec: '$(nodeVersion)'
+
+      - script: npm ci --no-audit --no-fund
+        displayName: 'npm ci'
+        workingDirectory: '$(appDir)'
+
+      - script: npm run lint
+        displayName: 'Lint'
+        workingDirectory: '$(appDir)'
+
+      - script: npm test
+        displayName: 'Tests (Vitest + server tests)'
+        workingDirectory: '$(appDir)'
+
+      # ACR Tasks can't pass the registry firewall even with --no-push (it logs in first), so
+      # open it for the build and close it again even if the build fails. Same as
+      # web-build-deploy (O3 / T3P.3). Overlapping runs of the two pipelines could close it
+      # under each other; re-queue the one that fails.
+      - task: AzureCLI@3
+        displayName: 'Open ACR firewall (time-boxed)'
+        inputs:
+          connectionType: 'azureRM'
+          azureSubscription: '$(azureSubscription)'
+          scriptType: 'ps'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            Write-Host "##vso[task.logissue type=warning]Opening the $(acrName) firewall (default action Allow) for this build."
+            az acr update --name $(acrName) --default-action Allow -o none
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - task: AzureCLI@3
+        displayName: 'az acr build --no-push'
+        inputs:
+          connectionType: 'azureRM'
+          azureSubscription: '$(azureSubscription)'
+          scriptType: 'ps'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            # PR id when run by the branch policy, else the build id (manual run).
+            $prId = '$(System.PullRequest.PullRequestId)'
+            $label = if ($prId -match '^\d+$') { "pr-$prId" } else { "build-$(Build.BuildId)" }
+            # Non-ASCII in the streamed build log crashes az on a cp1252 console
+            # (UnicodeEncodeError). az.cmd runs Python isolated (-I), which ignores
+            # PYTHON* variables, so call the CLI's own Python with -X utf8 instead.
+            $azPython = Join-Path (Split-Path (Split-Path (Get-Command az).Source)) 'python.exe'
+            if (-not (Test-Path $azPython)) { Write-Host "##vso[task.logissue type=error]No python.exe beside $((Get-Command az).Source)"; exit 1 }
+            & $azPython -X utf8 -IBm azure.cli acr build `
+              --registry $(acrName) `
+              --image "web:$label" `
+              --no-push `
+              --build-arg VITE_USE_API=true `
+              --build-arg VITE_API_BASE_URL=/api `
+              --build-arg GIT_SHA=$(Build.SourceVersion) `
+              $(appDir)
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - task: AzureCLI@3
+        displayName: 'Close ACR firewall'
+        condition: always()
+        inputs:
+          connectionType: 'azureRM'
+          azureSubscription: '$(azureSubscription)'
+          scriptType: 'ps'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            # Back to the Terraform state: public endpoint on, default action Deny.
+            az acr update --name $(acrName) --default-action Deny -o none
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "$(acrName) firewall closed (default action Deny)."

@@ -1,0 +1,29 @@
+# Keep the build context small and free of local state. The build stage runs npm ci and
+# npm run build itself, so local node_modules and dist must never be copied in.
+node_modules
+dist
+dist-ssr
+coverage
+.vite
+*.tsbuildinfo
+
+# Local env files and secrets
+.env
+.env.*
+
+# Tests and tooling not needed in the image
+server-tests
+scripts
+*.log
+
+# Docs, editor and VCS files
+*.md
+.vscode
+.idea
+.git
+.gitignore
+.dockerignore
+Dockerfile
+
+# semantic-release config (read on the agent, not by the image)
+.releaserc*

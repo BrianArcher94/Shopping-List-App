@@ -1,0 +1,382 @@
+# Web tier: version -> build & push image -> tag the release -> deploy -> verify (plan §14).
+#
+# The image tag is the semantic version of app/shopping-list, worked out by semantic-release
+# from Conventional Commits that touch that folder (release config:
+# app/shopping-list/.releaserc.json, tooling pinned in release/). Releases are git tags
+# web-vX.Y.Z; nothing is committed back to main.
+#
+#   Version  semantic-release --dry-run: the next version, or nothing if no feat/fix/perf
+#            (or breaking) commit touched app/shopping-list since the last web-v tag.
+#   Build    npm ci, lint, test, then az acr build -> web:<version> (ACR Tasks; no Docker
+#            on the agent).
+#   Release  semantic-release for real: pushes the web-v<version> tag. Runs only after the
+#            image is in ACR, so a failed build never leaves a tag without an image.
+#   Deploy   az containerapp update --image, wait for a healthy revision, then smoke-test
+#            the public URL. Skipped with pushOnly.
+#
+# Manual-run parameters:
+#   pushOnly  bootstrap a fresh environment: build and push, no deploy (the container app
+#             doesn't exist until infra pass 2 runs with this tag).
+#   imageTag  rollback/redeploy: skip Version/Build/Release and deploy this existing tag.
+#   rebuildTag  rebuild an already-released version from its web-v git tag ('latest' or
+#             e.g. 1.2.0) and push it, without releasing anything new. For the daily
+#             bring-up: the nightly destroy deletes the registry, so the image must be
+#             rebuilt even though there is nothing new to release.
+#
+# Needs (see the Phase 3P PR for setup): the apply service connection with Contributor on
+# the registry (T3.6) and Container Apps rights on the RG (T3P.4); the project Build
+# Service identity with Contribute + Create tag on this repo (tag push).
+
+trigger:
+  batch: true # one run at a time on main, so two releases can't race for a version
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - app/shopping-list/*
+
+pr: none # PR validation is web-pr-validate.yml, run by the main branch policy
+
+parameters:
+  - name: pushOnly
+    displayName: 'Build and push only, no deploy (bootstrap before infra pass 2)'
+    type: boolean
+    default: false
+  - name: imageTag
+    displayName: 'Deploy this existing tag instead of building (rollback), e.g. 1.2.0'
+    type: string
+    default: ' '
+  - name: rebuildTag
+    displayName: 'Rebuild a released version from its git tag, no new release (daily bring-up): latest or e.g. 1.2.0'
+    type: string
+    default: ' '
+  - name: openAcrForBuild
+    displayName: 'Open the ACR firewall for the build (needed: ACR Tasks quick builds cannot pass the firewall)'
+    type: boolean
+    default: true
+
+pool:
+  name: <PoolName>
+
+variables:
+  - name: azureSubscription
+    value: '<ServiceConnection>'
+  - name: acrName
+    value: 'slasqlcondvacrukw001'
+  - name: resourceGroup
+    value: 'slasqlcon-dv-resg-ukw-001'
+  - name: containerAppName
+    value: 'slasqlcon-dv-capp-web-ukw-001'
+  - name: publicUrl
+    value: 'https://<Hostname>'
+  - name: appDir
+    value: 'app/shopping-list'
+  - name: nodeVersion
+    value: '24'
+  - name: AZP_AGENT_CLEANUP_PSMODULES_IN_POWERSHELL
+    value: true
+
+stages:
+  # =========================================================
+  # Normal path: build a new version (skipped when imageTag is given)
+  # =========================================================
+  - ${{ if eq(trim(parameters.imageTag), '') }}:
+      - stage: Version
+        ${{ if eq(trim(parameters.rebuildTag), '') }}:
+          displayName: 'Next version'
+        ${{ else }}:
+          displayName: 'Resolve the version to rebuild'
+        jobs:
+          - ${{ if ne(trim(parameters.rebuildTag), '') }}:
+            - job: version
+              displayName: 'Find web-v tag (${{ trim(parameters.rebuildTag) }})'
+              steps:
+                - checkout: self
+                  fetchDepth: 0
+                  fetchTags: true
+
+                # Same output (next.version) as the semantic-release job below, so the
+                # Build and Deploy stages don't care which path produced it.
+                - powershell: |
+                    $ErrorActionPreference = 'Stop'
+                    $requested = '${{ trim(parameters.rebuildTag) }}'
+                    if ($requested -eq 'latest') {
+                      # Highest web-v tag reachable from the commit this run is on (main).
+                      $tag = git tag --list 'web-v*' --merged HEAD --sort=-v:refname | Select-Object -First 1
+                      if (-not $tag) { Write-Host "##vso[task.logissue type=error]No web-v tag on this branch yet. Do a normal run (pushOnly) to make the first release."; exit 1 }
+                    } else {
+                      $tag = "web-v$($requested -replace '^web-v', '')"
+                      git rev-parse -q --verify "refs/tags/$tag" | Out-Null
+                      if ($LASTEXITCODE -ne 0) { Write-Host "##vso[task.logissue type=error]Tag $tag doesn't exist."; exit 1 }
+                    }
+                    $version = $tag -replace '^web-v', ''
+                    Write-Host "Rebuilding $tag (no new release)"
+                    Write-Host "##vso[task.setvariable variable=version;isOutput=true]$version"
+                  name: next
+                  displayName: 'Resolve the tag'
+
+          - ${{ else }}:
+            - job: version
+              displayName: 'semantic-release (dry run)'
+              steps:
+                # Full history and tags: semantic-release reads the commits since the last
+                # web-v tag. persistCredentials lets it verify push access with the job token.
+                - checkout: self
+                  fetchDepth: 0
+                  fetchTags: true
+                  persistCredentials: true
+
+                - task: NodeTool@0
+                  displayName: 'Use Node $(nodeVersion)'
+                  inputs:
+                    versionSpec: '$(nodeVersion)'
+
+                - script: npm ci --no-audit --no-fund
+                  displayName: 'Install release tooling'
+                  workingDirectory: 'release'
+
+                - powershell: |
+                    $ErrorActionPreference = 'Stop'
+                    $env:NEXT_VERSION_FILE = "$(Agent.TempDirectory)/next-version.txt"
+                    Remove-Item $env:NEXT_VERSION_FILE -ErrorAction Ignore
+                    node ../../release/node_modules/semantic-release/bin/semantic-release.js --dry-run
+                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                    $version = if (Test-Path $env:NEXT_VERSION_FILE) { (Get-Content $env:NEXT_VERSION_FILE -Raw).Trim() } else { '' }
+                    if ($version) { Write-Host "Next web version: $version" }
+                    else { Write-Host "##vso[task.logissue type=warning]No releasable change to app/shopping-list (feat/fix/perf/breaking) since the last web-v tag - nothing to build." }
+                    Write-Host "##vso[task.setvariable variable=version;isOutput=true]$version"
+                  name: next
+                  displayName: 'Work out the next version'
+                  workingDirectory: '$(appDir)'
+
+      - stage: Build
+        displayName: 'Build & push image'
+        dependsOn: Version
+        condition: and(succeeded(), ne(dependencies.Version.outputs['version.next.version'], ''))
+        variables:
+          version: $[ stageDependencies.Version.version.outputs['next.version'] ]
+          gitSha: $(Build.SourceVersion)
+        jobs:
+          - job: build
+            displayName: 'Test, lint, az acr build'
+            steps:
+              - ${{ if eq(trim(parameters.rebuildTag), '') }}:
+                  - checkout: self
+                    fetchDepth: 1
+              - ${{ else }}:
+                  # Build the released source, not the current head of main.
+                  - checkout: self
+                    fetchDepth: 0
+                    fetchTags: true
+                  - powershell: |
+                      git -c advice.detachedHead=false checkout "web-v$(version)"
+                      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                      $sha = git rev-parse HEAD
+                      Write-Host "Checked out web-v$(version) ($sha)"
+                      Write-Host "##vso[task.setvariable variable=gitSha]$sha"
+                    displayName: 'Check out web-v$(version)'
+
+              - task: NodeTool@0
+                displayName: 'Use Node $(nodeVersion)'
+                inputs:
+                  versionSpec: '$(nodeVersion)'
+
+              - script: npm ci --no-audit --no-fund
+                displayName: 'npm ci'
+                workingDirectory: '$(appDir)'
+
+              - script: npm run lint
+                displayName: 'Lint'
+                workingDirectory: '$(appDir)'
+
+              - script: npm test
+                displayName: 'Tests (Vitest + server tests)'
+                workingDirectory: '$(appDir)'
+
+              # O3 / T3P.3: on by default. ACR Tasks quick builds run from Microsoft-hosted IPs
+              # that the registry firewall rejects (403 at login), and neither the AzureServices
+              # bypass nor networkRuleBypassAllowedForTasks lets az acr build through (tested
+              # 2026-10-22). So open the firewall for the build only; the close step runs even
+              # if the build fails. Untick only if the registry is reachable another way.
+              - ${{ if eq(parameters.openAcrForBuild, true) }}:
+                  - task: AzureCLI@3
+                    displayName: 'Open ACR firewall (time-boxed)'
+                    inputs:
+                      connectionType: 'azureRM'
+                      azureSubscription: '$(azureSubscription)'
+                      scriptType: 'ps'
+                      scriptLocation: 'inlineScript'
+                      inlineScript: |
+                        Write-Host "##vso[task.logissue type=warning]Opening the $(acrName) firewall (default action Allow) for this build."
+                        az acr update --name $(acrName) --default-action Allow -o none
+                        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+              # ACR Tasks builds the Dockerfile in Azure and pushes web:<version>. The tag
+              # isn't released (no git tag) until this succeeds, so a re-run after a
+              # failure rebuilds and overwrites the same version.
+              - task: AzureCLI@3
+                displayName: 'az acr build web:$(version)'
+                inputs:
+                  connectionType: 'azureRM'
+                  azureSubscription: '$(azureSubscription)'
+                  scriptType: 'ps'
+                  scriptLocation: 'inlineScript'
+                  inlineScript: |
+                    # az streams the build log to the console; on a Windows agent that's
+                    # cp1252, and a non-ASCII character in the log (e.g. a check mark)
+                    # crashes the CLI with UnicodeEncodeError. az.cmd runs Python isolated
+                    # (-I), which ignores PYTHONIOENCODING/PYTHONUTF8, so call the CLI's own
+                    # Python with -X utf8 instead (same login and config as az).
+                    $azPython = Join-Path (Split-Path (Split-Path (Get-Command az).Source)) 'python.exe'
+                    if (-not (Test-Path $azPython)) { Write-Host "##vso[task.logissue type=error]No python.exe beside $((Get-Command az).Source)"; exit 1 }
+                    & $azPython -X utf8 -IBm azure.cli acr build `
+                      --registry $(acrName) `
+                      --image "web:$(version)" `
+                      --build-arg VITE_USE_API=true `
+                      --build-arg VITE_API_BASE_URL=/api `
+                      --build-arg GIT_SHA=$(gitSha) `
+                      $(appDir)
+                    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+              - ${{ if eq(parameters.openAcrForBuild, true) }}:
+                  - task: AzureCLI@3
+                    displayName: 'Close ACR firewall'
+                    condition: always()
+                    inputs:
+                      connectionType: 'azureRM'
+                      azureSubscription: '$(azureSubscription)'
+                      scriptType: 'ps'
+                      scriptLocation: 'inlineScript'
+                      inlineScript: |
+                        # Back to the Terraform state: public endpoint on, default action Deny.
+                        az acr update --name $(acrName) --default-action Deny -o none
+                        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                        Write-Host "$(acrName) firewall closed (default action Deny)."
+
+      # A rebuild re-creates an image for a version that is already tagged: nothing to release.
+      - ${{ if eq(trim(parameters.rebuildTag), '') }}:
+          - stage: Release
+            displayName: 'Tag release'
+            dependsOn:
+              - Version
+              - Build
+            condition: and(succeeded(), ne(dependencies.Version.outputs['version.next.version'], ''))
+            variables:
+              version: $[ stageDependencies.Version.version.outputs['next.version'] ]
+            jobs:
+              - job: release
+                displayName: 'semantic-release (tag web-v$(version))'
+                steps:
+                  - checkout: self
+                    fetchDepth: 0
+                    fetchTags: true
+                    persistCredentials: true
+
+                  - task: NodeTool@0
+                    displayName: 'Use Node $(nodeVersion)'
+                    inputs:
+                      versionSpec: '$(nodeVersion)'
+
+                  - script: npm ci --no-audit --no-fund
+                    displayName: 'Install release tooling'
+                    workingDirectory: 'release'
+
+                  # Same commit as the Version stage, so the same version. If main moved in
+                  # the meantime semantic-release declines to release (it only tags the branch
+                  # head) and this fails: re-run the pipeline on the new head.
+                  - powershell: |
+                      $ErrorActionPreference = 'Stop'
+                      $env:NEXT_VERSION_FILE = "$(Agent.TempDirectory)/released-version.txt"
+                      Remove-Item $env:NEXT_VERSION_FILE -ErrorAction Ignore
+                      node ../../release/node_modules/semantic-release/bin/semantic-release.js
+                      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                      $released = if (Test-Path $env:NEXT_VERSION_FILE) { (Get-Content $env:NEXT_VERSION_FILE -Raw).Trim() } else { '' }
+                      if ($released -ne '$(version)') {
+                        Write-Host "##vso[task.logissue type=error]Released '$released' but built '$(version)'. Did main move during the run? Re-run the pipeline."
+                        exit 1
+                      }
+                      Write-Host "Tagged web-v$released"
+                    displayName: 'Push the web-v$(version) tag'
+                    workingDirectory: '$(appDir)'
+
+  # =========================================================
+  # Deploy (skipped with pushOnly)
+  # =========================================================
+  - ${{ if eq(parameters.pushOnly, false) }}:
+      - stage: Deploy
+        displayName: 'Deploy to Container Apps'
+        ${{ if eq(trim(parameters.imageTag), '') }}:
+          dependsOn:
+            - Version
+            - ${{ if eq(trim(parameters.rebuildTag), '') }}:
+              - Release
+            - ${{ else }}:
+              - Build
+          condition: and(succeeded(), ne(dependencies.Version.outputs['version.next.version'], ''))
+          variables:
+            imageTag: $[ stageDependencies.Version.version.outputs['next.version'] ]
+        ${{ else }}:
+          dependsOn: []
+          variables:
+            imageTag: ${{ trim(parameters.imageTag) }}
+        jobs:
+          - deployment: deploy
+            displayName: 'Deploy web:$(imageTag)'
+            environment: 'dev'
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - checkout: none
+
+                    # Re-deploying the same tag changes nothing in the template, so no new
+                    # revision is created (idempotent).
+                    - task: AzureCLI@3
+                      displayName: 'Update image and wait for a healthy revision'
+                      inputs:
+                        connectionType: 'azureRM'
+                        azureSubscription: '$(azureSubscription)'
+                        scriptType: 'ps'
+                        scriptLocation: 'inlineScript'
+                        inlineScript: |
+                          # No $ErrorActionPreference = 'Stop' here: in Windows PowerShell az's
+                          # stderr warnings would throw. Exit codes are checked explicitly.
+                          $null = az config set extension.use_dynamic_install=yes_without_prompt
+
+                          $image = "$(acrName).azurecr.io/web:$(imageTag)"
+                          $exists = az acr repository show-tags --name $(acrName) --repository web --query "contains(@, '$(imageTag)')" -o tsv
+                          if ($exists -ne 'true') { Write-Host "##vso[task.logissue type=error]$image not found in ACR"; exit 1 }
+
+                          az containerapp update --name $(containerAppName) --resource-group $(resourceGroup) --image $image -o none
+                          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+                          # Poll (up to ~5 min) until the latest revision is ready and Healthy.
+                          for ($i = 1; $i -le 30; $i++) {
+                            $app = az containerapp show -n $(containerAppName) -g $(resourceGroup) `
+                              --query "{latest:properties.latestRevisionName, ready:properties.latestReadyRevisionName}" -o json | ConvertFrom-Json
+                            $rev = az containerapp revision show -n $(containerAppName) -g $(resourceGroup) --revision $app.latest `
+                              --query "{health:properties.healthState, running:properties.runningState, image:properties.template.containers[0].image}" -o json | ConvertFrom-Json
+                            Write-Host "[$i] $($app.latest): health=$($rev.health) running=$($rev.running) image=$($rev.image)"
+                            if ($rev.image -eq $image -and $app.latest -eq $app.ready -and $rev.health -eq 'Healthy') { Write-Host "Revision $($app.latest) is healthy."; exit 0 }
+                            if ($rev.running -eq 'Failed') { Write-Host "##vso[task.logissue type=error]Revision $($app.latest) failed to start"; exit 1 }
+                            Start-Sleep -Seconds 10
+                          }
+                          Write-Host "##vso[task.logissue type=error]Revision did not become healthy within 5 minutes"
+                          exit 1
+
+                    # Through Cloudflare and App Gateway: the full public path.
+                    - powershell: |
+                        $ErrorActionPreference = 'Stop'
+                        function Status([string]$method, [string]$path) {
+                          (curl.exe -s -o NUL -w '%{http_code}' -X $method --max-time 30 "$(publicUrl)$path").Trim()
+                        }
+                        $failed = $false
+                        $health = Status GET '/healthz'
+                        Write-Host "GET  /healthz                         -> $health (expect 200)"
+                        if ($health -ne '200') { $failed = $true }
+                        $jobs = Status POST '/api/jobs/create-weekly-list'
+                        Write-Host "POST /api/jobs/create-weekly-list     -> $jobs (expect 404, edge block)"
+                        if ($jobs -ne '404') { $failed = $true }
+                        if ($failed) { Write-Host "##vso[task.logissue type=error]Smoke test failed"; exit 1 }
+                      displayName: 'Smoke test the public URL'

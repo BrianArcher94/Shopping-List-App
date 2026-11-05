@@ -1,0 +1,33 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "Every_Saturday_2000": {
+        "type": "Recurrence",
+        "recurrence": {
+          "frequency": "Week",
+          "interval": 1,
+          "timeZone": "GMT Standard Time",
+          "schedule": {
+            "weekDays": [ "Saturday" ],
+            "hours": [ 20 ],
+            "minutes": [ 0 ]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Create_weekly_list": {
+        "type": "Http",
+        "inputs": {
+          "method": "POST",
+          "uri": "@{appsetting('FUNCTION_BASE_URL')}/api/jobs/create-weekly-list",
+          "headers": { "Content-Type": "application/json" }
+        },
+        "runAfter": {}
+      }
+    }
+  },
+  "kind": "Stateful"
+}

@@ -1,0 +1,25 @@
+# Local run of the production web image (V7, task T2.8). Web tier only: the database is
+# always Azure SQL Database and the API is the Function App, so neither runs here.
+#
+#   docker compose up --build            # http://localhost:8080
+#
+# By default /api is proxied to the deployed dev Function App. Its public endpoint only
+# accepts your IP (local.shared.ip_address), which is also the container's egress IP. To use a
+# Function running locally with `func start` instead:
+#
+#   API_PROXY_TARGET=http://host.docker.internal:7071 docker compose up --build
+
+services:
+  web:
+    build:
+      context: ./app/shopping-list
+      args:
+        VITE_USE_API: "true"
+        VITE_API_BASE_URL: /api
+    environment:
+      API_PROXY_TARGET: ${API_PROXY_TARGET:-https://slasqlcon-dv-fnap-ukw-001.azurewebsites.net}
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # Linux engines; Docker Desktop provides it already

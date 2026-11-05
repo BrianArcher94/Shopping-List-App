@@ -1,0 +1,13 @@
+{
+  "name": "sla-release-tooling",
+  "private": true,
+  "description": "Pinned semantic-release tooling for the web image version (pipelines/web-build-deploy.yml). Not part of the app or the image.",
+  "engines": {
+    "node": "^22.14.0 || >=24.10.0"
+  },
+  "devDependencies": {
+    "@semantic-release/exec": "7.1.0",
+    "semantic-release": "25.0.9",
+    "semantic-release-monorepo": "8.0.2"
+  }
+}
